@@ -1,4 +1,4 @@
-"""One SpaceXAI provider. Credentials stay on the server."""
+"""One Gemini provider. Credentials stay on the server."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from pydantic import ValidationError
 
 from app.interpreter.prompts import SYSTEM_PROMPT, user_prompt
 from app.interpreter.raw import Draft, LLMRaw, draft_from_llm
-from app.llm.client import ChatClient, XAIChatClient
+from app.llm.client import ChatClient, GeminiChatClient
 from app.llm.errors import ProviderBadResponse, ProviderUnavailable
+
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 
 
 class LLMProvider(Protocol):
@@ -17,17 +19,19 @@ class LLMProvider(Protocol):
         """Return a structured draft. Callers still validate it."""
 
 
-class XAIProvider:
-    """SpaceXAI chat provider. The model id defaults to grok-4.7."""
+class GeminiProvider:
+    """Gemini chat provider. The model id defaults to gemini-3.1-flash-lite."""
 
     def __init__(
         self,
         api_key: str,
-        model: str = "grok-4.7",
+        model: str = DEFAULT_GEMINI_MODEL,
         timeout_seconds: float = 30.0,
         client: ChatClient | None = None,
     ) -> None:
-        self._client = client or XAIChatClient(
+        if not api_key.strip():
+            raise ValueError("GEMINI_API_KEY is not set.")
+        self._client = client or GeminiChatClient(
             api_key=api_key,
             model=model,
             timeout_seconds=timeout_seconds,

@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.interpreter.raw import Draft, LLMRaw
+from app.llm.client import GeminiChatClient
 from app.llm.errors import ProviderBadResponse, ProviderUnavailable
-from app.llm.provider import XAIProvider
+from app.llm.provider import GeminiProvider
 from app.main import create_app
 
 
@@ -112,7 +113,7 @@ def test_provider_retries_malformed_output_once() -> None:
             return LLMRaw(kind="query", query="ignored").model_dump()
 
     fake = FakeClient()
-    provider = XAIProvider(api_key="test-key", client=fake)
+    provider = GeminiProvider(api_key="test-key", client=fake)
     draft = provider.interpret("What did I sell today?", "en")
     assert fake.calls == 2
     assert draft.kind == "query"
@@ -123,6 +124,36 @@ def test_provider_gives_up_after_two_bad_payloads() -> None:
         def complete(self, messages: list[dict[str, str]]) -> dict[str, object]:
             return {"kind": "not-a-kind"}
 
-    provider = XAIProvider(api_key="test-key", client=FakeClient())
+    provider = GeminiProvider(api_key="test-key", client=FakeClient())
     with pytest.raises(ProviderBadResponse):
         provider.interpret("hello", "en")
+
+
+def test_blank_gemini_key_is_a_configuration_error() -> None:
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        GeminiProvider(api_key="  ")
+
+
+def test_gemini_client_rejects_malformed_json_without_calling_out() -> None:
+    class Offline(GeminiChatClient):
+        def _generate(self, messages: list[dict[str, str]]) -> str:
+            return "not json"
+
+    with pytest.raises(ProviderBadResponse):
+        Offline(api_key="test-key", model="gemini-3.1-flash-lite", timeout_seconds=1).complete(
+            [{"role": "user", "content": "hello"}]
+        )
+
+
+def test_gemini_client_parses_structured_json() -> None:
+    class Offline(GeminiChatClient):
+        def _generate(self, messages: list[dict[str, str]]) -> str:
+            return '{"kind":"clarification","query":null}'
+
+    raw = Offline(api_key="test-key", model="gemini-3.1-flash-lite", timeout_seconds=1).complete(
+        [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    assert raw.kind == "clarification"

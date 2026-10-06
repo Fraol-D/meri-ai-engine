@@ -7,18 +7,18 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.config import Settings, load_settings
 from app.interpreter.service import InterpreterService
-from app.llm.provider import LLMProvider, XAIProvider
+from app.llm.provider import GeminiProvider, LLMProvider
 
 _UNSET = object()
 
 
 def build_provider(settings: Settings) -> LLMProvider | None:
-    if not settings.xai_api_key:
+    if not settings.gemini_api_key:
         return None
-    return XAIProvider(
-        api_key=settings.xai_api_key,
-        model=settings.xai_model,
-        timeout_seconds=settings.xai_timeout_seconds,
+    return GeminiProvider(
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_model,
+        timeout_seconds=settings.gemini_timeout_seconds,
     )
 
 

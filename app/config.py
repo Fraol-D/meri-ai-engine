@@ -27,25 +27,25 @@ def load_dotenv(path: Path) -> None:
 
 def load_settings() -> Settings:
     load_dotenv(ROOT / ".env")
-    key = os.getenv("XAI_API_KEY", "").strip()
-    timeout_raw = os.getenv("XAI_TIMEOUT_SECONDS", "30").strip()
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    timeout_raw = os.getenv("GEMINI_TIMEOUT_SECONDS", "30").strip()
     try:
         timeout = float(timeout_raw)
     except ValueError:
         timeout = 30.0
     if timeout <= 0:
         timeout = 30.0
-    model = os.getenv("XAI_MODEL", "grok-4.7").strip() or "grok-4.7"
+    model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip() or "gemini-3.1-flash-lite"
     return Settings(
-        xai_api_key=key or None,
-        xai_model=model,
-        xai_timeout_seconds=timeout,
+        gemini_api_key=key or None,
+        gemini_model=model,
+        gemini_timeout_seconds=timeout,
     )
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    xai_api_key: str | None = None
-    xai_model: str = "grok-4.7"
-    xai_timeout_seconds: float = Field(default=30.0, gt=0)
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_timeout_seconds: float = Field(default=30.0, gt=0)

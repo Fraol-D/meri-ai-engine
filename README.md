@@ -71,13 +71,13 @@ copy .env.example .env
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `XAI_API_KEY` | No | empty | SpaceXAI (xAI) key, used only on the server. Recognized English patterns work without it. |
-| `XAI_MODEL` | No | `grok-4.7` | Model id for unrecognized phrasing. |
-| `XAI_TIMEOUT_SECONDS` | No | `30` | Provider timeout. |
+| `GEMINI_API_KEY` | No | empty | Gemini API key, used only on the server. Recognized English patterns work without it. |
+| `GEMINI_MODEL` | No | `gemini-3.1-flash-lite` | Model id for unrecognized phrasing. This default supports structured JSON on the free tier. |
+| `GEMINI_TIMEOUT_SECONDS` | No | `30` | Provider timeout. |
 
-The SDK calls `https://api.x.ai/v1`. The key is read from the environment or from a git-ignored `.env`. It is never returned to the client.
+The key is read from the environment or from a git-ignored `.env`. It is never returned to the client.
 
-Without `XAI_API_KEY`, an utterance the English rules do not recognize returns a clarification instead of calling a model.
+Without `GEMINI_API_KEY`, an utterance the English rules do not recognize returns a clarification. The service does not invent a model response.
 
 ## Run
 
@@ -85,7 +85,7 @@ Without `XAI_API_KEY`, an utterance the English rules do not recognize returns a
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Render uses `render.yaml`. The service listens on `0.0.0.0` and `$PORT`. Set `XAI_API_KEY` in the Render dashboard if unrecognized phrasing should call SpaceXAI. Leave it empty to run the English rules only.
+Render uses `render.yaml`. The service listens on `0.0.0.0` and `$PORT`. Set `GEMINI_API_KEY` in the Render dashboard if unrecognized phrasing should call Gemini. Leave it empty to run the English rules only.
 
 Health check (this does not call the model):
 
@@ -119,7 +119,7 @@ Error bodies are `{"detail": "..."}`. They do not include provider payloads or c
 
 ## Provider
 
-One provider is implemented: SpaceXAI via the `xai-sdk`, behind `LLMProvider`. The model is asked for a fixed schema. The raw JSON is validated with Pydantic, then checked against the source text.
+One provider is implemented: Gemini via the `google-genai` SDK, behind `LLMProvider`. The default model is `gemini-3.1-flash-lite`. The model is asked for the `LLMRaw` JSON schema. That JSON is validated with Pydantic, then checked against the source text.
 
 The model is not the only safety check. After any model output, the service rejects unsupported event types, non-positive amounts, zero inventory changes, invented numbers, vague quantities, and an unresolved price scope.
 
@@ -137,7 +137,7 @@ ruff check .
 ```text
 utterance
   -> English rules, when the speech act is recognized
-  -> otherwise SpaceXAI structured output
+  -> otherwise Gemini structured output
   -> Pydantic validation
   -> semantic checks and normalization
   -> InterpretationResult
@@ -150,7 +150,7 @@ app/
   api/routes.py            # GET /health, POST /interpret
   schemas/                 # public request and response models
   interpreter/             # rules, prompts, normalization, validation
-  llm/                     # provider interface and SpaceXAI client
+  llm/                     # provider interface and Gemini client
 tests/
 ```
 
@@ -161,7 +161,7 @@ This process has no database, queue, cache, ORM, MCP server, LangChain agent, or
 This is an MVP interpreter, not a production service.
 
 - There is no authentication, rate limit, or audit log.
-- English rules cover the bookkeeping phrases in the test suite. Other wording is sent to SpaceXAI only when `XAI_API_KEY` is set, and that live path is not part of the automated tests.
+- English rules cover the bookkeeping phrases in the test suite. Other wording is sent to Gemini only when `GEMINI_API_KEY` is set, and that live path is not part of the automated tests.
 - Amharic and other languages are accepted in the `language` field but are not parsed by the rules. Without a provider key they return a clarification.
 - Each request is stateless. There is no conversation store. After a clarification, send the original utterance plus the user's answer, for example `I sold five shirts for 900 birr. Each.` `Each.` or `Total.` alone does not create an event. The generated clarification question does not have to be sent. If it is included and the text ends in a short `Each.` or `Total.`, that answer is the amount-scope cue. The original sentence still has to be in the text when no model is configured, because the question itself does not say sold or bought.
 - Relative dates such as yesterday, last week, last year, and two days ago are not calculated and are not dropped. The response asks for a concrete `YYYY-MM-DD` date instead of guessing or using today.
