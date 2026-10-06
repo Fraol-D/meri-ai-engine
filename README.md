@@ -106,6 +106,24 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/interpret -ContentType
 
 `language` defaults to `en`. `business_id` is not required. English is the supported MVP language.
 
+A follow-up to a clarification can include the original utterance in `context`. The service does not store it.
+
+```json
+{
+  "text": "1000 birr",
+  "language": "en",
+  "context": {
+    "original_text": "I sold five shirts",
+    "previous_result": {
+      "type": "clarification",
+      "missing_fields": ["amount"]
+    }
+  }
+}
+```
+
+`text` remains the user's answer. Requests without `context` are unchanged. The text block the current frontend already sends (`Original user statement`, `Clarification question`, `Missing fields`, `User clarification answer`) is read the same way.
+
 ### Status codes
 
 | Situation | Status |
@@ -164,6 +182,6 @@ This is an MVP interpreter, not a production service.
 - There is no authentication, rate limit, or audit log.
 - English rules cover the bookkeeping phrases in the test suite. Other wording is sent to Gemini only when `GEMINI_API_KEY` is set, and that live path is not part of the automated tests.
 - Amharic and other languages are accepted in the `language` field but are not parsed by the rules. Without a provider key they return a clarification.
-- Each request is stateless. There is no conversation store. After a clarification, send the original utterance plus the user's answer, for example `I sold five shirts for 900 birr. Each.` `Each.` or `Total.` alone does not create an event. The generated clarification question does not have to be sent. If it is included and the text ends in a short `Each.` or `Total.`, that answer is the amount-scope cue. The original sentence still has to be in the text when no model is configured, because the question itself does not say sold or bought.
+- Each request is stateless. There is no conversation store. After a clarification, send `context.original_text` with the user's answer in `text`, or send the original utterance and the answer in one string. `I sold five shirts for 900 birr. Each.` still works. `Each.` or `Total.` alone does not create an event. A price given for the first time ("I sold five shirts" then "1000 birr") is the transaction total. A price already next to a quantity ("five shirts for 1000 birr") stays ambiguous until the answer says total or each. A complete new utterance wrapped into a pending clarification, such as "I just sold 5 shirts for 1000 birr each", is interpreted on its own.
 - Relative dates such as yesterday, last week, last year, and two days ago are not calculated and are not dropped. The response asks for a concrete `YYYY-MM-DD` date instead of guessing or using today.
 - The service never says an event was recorded.

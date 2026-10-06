@@ -48,6 +48,51 @@ def test_interpret_ambiguous_sale_over_http() -> None:
     assert response.json()["missing_fields"] == ["amount_scope"]
 
 
+def test_interpret_context_continues_a_clarification() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        json={
+            "text": "1000 birr",
+            "language": "en",
+            "context": {
+                "original_text": "I sold five shirts",
+                "previous_result": {
+                    "type": "clarification",
+                    "missing_fields": ["amount"],
+                    "question": "How much was the sale?",
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {"item": "shirts", "quantity": 5, "amount": 1000, "currency": "ETB"},
+    }
+
+
+def test_interpret_context_scope_answer_multiplies() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        json={
+            "text": "per shirt",
+            "context": {
+                "original_text": "I sold five shirts for 1000 birr",
+                "previous_result": {"missing_fields": ["amount_scope"]},
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["event_type"] == "sale"
+    assert body["data"]["amount"] == 5000
+    assert body["data"]["quantity"] == 5
+    assert "unit_price" not in body["data"]
+
+
 def test_language_defaults_and_business_id_is_not_required() -> None:
     client = TestClient(create_app(provider=None))
     response = client.post(

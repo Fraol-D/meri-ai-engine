@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.interpreter.continuation import Continuation, resolve_utterance
 from app.interpreter.raw import Draft
 from app.interpreter.rules import analyze, draft_from_evidence
 from app.interpreter.validation import finalize, unknown_clarification
@@ -17,16 +18,22 @@ class InterpreterService:
     def __init__(self, provider: LLMProvider | None = None) -> None:
         self.provider = provider
 
-    def interpret(self, text: str, language: str = "en") -> InterpretationResult:
-        return interpret_text(text, language, self.provider)
+    def interpret(
+        self,
+        text: str,
+        language: str = "en",
+        continuation: Continuation | None = None,
+    ) -> InterpretationResult:
+        return interpret_text(text, language, self.provider, continuation)
 
 
 def interpret_text(
     text: str,
     language: str = "en",
     provider: LLMProvider | None = None,
+    continuation: Continuation | None = None,
 ) -> InterpretationResult:
-    cleaned = text.strip()
+    cleaned = resolve_utterance(text, continuation)
     if not cleaned:
         raise EmptyUtterance()
     evidence = analyze(cleaned)

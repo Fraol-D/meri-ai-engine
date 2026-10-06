@@ -487,3 +487,140 @@ def test_replayed_scope_question_uses_the_trailing_answer() -> None:
     total = _data(f"{question} Total.", Greedy())
     assert total["type"] == "create_event"
     assert total["data"]["amount"] == 900
+
+
+def _frontend_continuation(original: str, question: str, missing: list[str], answer: str) -> str:
+    fields = ", ".join(missing)
+    return "\n".join(
+        [
+            f"Original user statement: {original}",
+            f"Clarification question: {question}",
+            f"Missing fields: {fields}",
+            f"User clarification answer: {answer}",
+            "Resolve the original request using the clarification answer.",
+        ]
+    )
+
+
+def test_explicit_unit_price_is_the_total_sale() -> None:
+    each = _data("I sold 5 shirts for 1000 birr each")
+    per_shirt = _data("I sold 5 shirts for 1000 birr per shirt")
+    just = _data("I just sold 5 shirts for 1000 birr each")
+    for payload in (each, per_shirt, just):
+        assert payload["type"] == "create_event"
+        assert payload["event_type"] == "sale"
+        assert payload["data"] == {
+            "item": "shirts",
+            "quantity": 5,
+            "amount": 5000,
+            "currency": "ETB",
+        }
+        assert "unit_price" not in payload["data"]
+
+
+def test_explicit_unit_price_purchase_is_the_total() -> None:
+    payload = _data("I bought 5 shirts for 1000 birr each")
+    assert payload == {
+        "type": "create_event",
+        "event_type": "purchase",
+        "data": {"item": "shirts", "quantity": 5, "amount": 5000, "currency": "ETB"},
+    }
+
+
+def test_unqualified_price_with_quantity_stays_ambiguous() -> None:
+    payload = _data("I sold five shirts for 1000 birr")
+    assert payload["type"] == "clarification"
+    assert payload["missing_fields"] == ["amount_scope"]
+    assert "1000 birr" in payload["question"]
+    assert "per shirt" in payload["question"]
+
+
+def test_amount_answer_continues_the_original_sale() -> None:
+    class Boom:
+        def interpret(self, text: str, language: str) -> Draft:
+            raise AssertionError(text)
+
+    payload = _data(
+        _frontend_continuation(
+            "I sold five shirts",
+            "How much was the sale?",
+            ["amount"],
+            "1000 birr",
+        ),
+        Boom(),
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {"item": "shirts", "quantity": 5, "amount": 1000, "currency": "ETB"},
+    }
+
+
+def test_scope_answer_resolves_an_ambiguous_sale() -> None:
+    per_shirt = _data(
+        _frontend_continuation(
+            "I sold five shirts for 1000 birr",
+            "Is 1000 birr the total for all five shirts, or 1000 birr per shirt?",
+            ["amount_scope"],
+            "per shirt",
+        )
+    )
+    assert per_shirt["type"] == "create_event"
+    assert per_shirt["event_type"] == "sale"
+    assert per_shirt["data"]["quantity"] == 5
+    assert per_shirt["data"]["amount"] == 5000
+    assert per_shirt["data"]["currency"] == "ETB"
+
+    total = _data(
+        _frontend_continuation(
+            "I sold five shirts for 1000 birr",
+            "Is 1000 birr the total for all five shirts, or 1000 birr per shirt?",
+            ["amount_scope"],
+            "total",
+        )
+    )
+    assert total["type"] == "create_event"
+    assert total["data"]["amount"] == 1000
+    assert total["data"]["quantity"] == 5
+
+
+def test_scope_answer_does_not_invent_a_quantity() -> None:
+    per_shirt = _data(
+        _frontend_continuation(
+            "I sold shirts for 1000 birr",
+            "Is 1000 birr the total for all the shirts, or 1000 birr per shirt?",
+            ["quantity", "amount_scope"],
+            "per shirt",
+        )
+    )
+    assert per_shirt["type"] == "clarification"
+    assert per_shirt["missing_fields"] == ["quantity"]
+    assert "amount" not in per_shirt["missing_fields"]
+    assert "data" not in per_shirt
+
+    total = _data(
+        _frontend_continuation(
+            "I sold shirts for 1000 birr",
+            "Is 1000 birr the total for all the shirts, or 1000 birr per shirt?",
+            ["quantity"],
+            "total",
+        )
+    )
+    assert total["type"] == "clarification"
+    assert total["missing_fields"] == ["quantity"]
+    assert "How many shirts did you sell?" in total["question"]
+
+
+def test_wrapped_new_sale_is_not_folded_into_an_expense() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I spent 200 birr on rent",
+            "What was the expense for?",
+            ["description"],
+            "I just sold 5 shirts for 1000 birr each",
+        )
+    )
+    assert payload["type"] == "create_event"
+    assert payload["event_type"] == "sale"
+    assert payload["data"]["amount"] == 5000
+    assert payload["data"]["quantity"] == 5
