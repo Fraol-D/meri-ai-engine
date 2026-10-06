@@ -157,3 +157,67 @@ def test_gemini_client_parses_structured_json() -> None:
         ]
     )
     assert raw.kind == "clarification"
+
+
+def test_interpret_options_preflight_allows_localhost() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.options(
+        "/interpret",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "POST" in response.headers.get("access-control-allow-methods", "").upper()
+    assert "content-type" in response.headers.get("access-control-allow-headers", "").lower()
+
+
+def test_interpret_options_preflight_allows_production_frontend() -> None:
+    client = TestClient(create_app(provider=None))
+    origin = "https://voice-first-business-assistant.vercel.app"
+    response = client.options(
+        "/interpret",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_interpret_post_includes_cors_origin_header() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        headers={"Origin": "http://localhost:3000"},
+        json={"text": "I sold five shirts for 900 birr each.", "language": "en"},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["data"]["amount"] == 4500
+
+
+def test_cors_origins_env_is_respected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,https://voice-first-business-assistant.vercel.app",
+    )
+    client = TestClient(create_app(provider=None))
+    response = client.options(
+        "/interpret",
+        headers={
+            "Origin": "https://voice-first-business-assistant.vercel.app",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert (
+        response.headers["access-control-allow-origin"]
+        == "https://voice-first-business-assistant.vercel.app"
+    )

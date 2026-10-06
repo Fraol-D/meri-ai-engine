@@ -13,3 +13,5 @@ services:
         value: "30"
       - key: GEMINI_API_KEY
         sync: false
+      - key: CORS_ORIGINS
+        value: http://localhost:3000,https://voice-first-business-assistant.vercel.app

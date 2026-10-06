@@ -36,11 +36,24 @@ def load_settings() -> Settings:
     if timeout <= 0:
         timeout = 30.0
     model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip() or "gemini-3.1-flash-lite"
+    cors_raw = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).strip() or DEFAULT_CORS_ORIGINS
     return Settings(
         gemini_api_key=key or None,
         gemini_model=model,
         gemini_timeout_seconds=timeout,
+        cors_origins=parse_cors_origins(cors_raw),
     )
+
+
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000,"
+    "https://voice-first-business-assistant.vercel.app"
+)
+
+
+def parse_cors_origins(raw: str) -> list[str]:
+    """Split a comma-separated CORS origin list. Empty entries are dropped."""
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 class Settings(BaseModel):
@@ -49,3 +62,6 @@ class Settings(BaseModel):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_timeout_seconds: float = Field(default=30.0, gt=0)
+    cors_origins: list[str] = Field(
+        default_factory=lambda: parse_cors_origins(DEFAULT_CORS_ORIGINS),
+    )

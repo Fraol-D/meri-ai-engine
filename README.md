@@ -74,6 +74,7 @@ copy .env.example .env
 | `GEMINI_API_KEY` | No | empty | Gemini API key, used only on the server. Recognized English patterns work without it. |
 | `GEMINI_MODEL` | No | `gemini-3.1-flash-lite` | Model id for unrecognized phrasing. This default supports structured JSON on the free tier. |
 | `GEMINI_TIMEOUT_SECONDS` | No | `30` | Provider timeout. |
+| `CORS_ORIGINS` | No | `http://localhost:3000,https://voice-first-business-assistant.vercel.app` | Comma-separated browser origins for CORS. No credentials. |
 
 The key is read from the environment or from a git-ignored `.env`. It is never returned to the client.
 
@@ -85,7 +86,7 @@ Without `GEMINI_API_KEY`, an utterance the English rules do not recognize return
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Render uses `render.yaml`. The service listens on `0.0.0.0` and `$PORT`. Set `GEMINI_API_KEY` in the Render dashboard if unrecognized phrasing should call Gemini. Leave it empty to run the English rules only.
+Render uses `render.yaml`. The service listens on `0.0.0.0` and `$PORT`. Set `GEMINI_API_KEY` in the Render dashboard if unrecognized phrasing should call Gemini. Leave it empty to run the English rules only. `CORS_ORIGINS` defaults to the local frontend and the production Vercel app.
 
 Health check (this does not call the model):
 

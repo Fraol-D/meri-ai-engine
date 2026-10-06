@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.config import Settings, load_settings
@@ -33,6 +34,13 @@ def create_app(provider: LLMProvider | None | object = _UNSET) -> FastAPI:
         title="Meri AI Engine",
         version="0.1.0",
         summary="Interpret business speech into events, queries, or clarifications.",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
     )
     app.state.interpreter = InterpreterService(resolved)
     app.include_router(router)
