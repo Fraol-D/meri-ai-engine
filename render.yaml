@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: meri-ai-engine
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: XAI_MODEL
+        value: grok-4.7
+      - key: XAI_TIMEOUT_SECONDS
+        value: "30"
+      - key: XAI_API_KEY
+        sync: false

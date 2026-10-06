@@ -1,0 +1,128 @@
+"""HTTP contract for health and interpret."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.interpreter.raw import Draft, LLMRaw
+from app.llm.errors import ProviderBadResponse, ProviderUnavailable
+from app.llm.provider import XAIProvider
+from app.main import create_app
+
+
+def test_health_does_not_call_the_provider() -> None:
+    class Boom:
+        def interpret(self, text: str, language: str) -> Draft:
+            raise AssertionError("health called the provider")
+
+    client = TestClient(create_app(Boom()))
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_interpret_sale_over_http() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        json={"text": "I sold five shirts for 900 birr each.", "language": "en"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["amount"] == 4500
+    assert "customer" not in body["data"]
+    assert "confirmed" not in body
+    assert "recorded" not in body
+
+
+def test_interpret_ambiguous_sale_over_http() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        json={"text": "I sold five shirts for 900 birr.", "language": "en"},
+    )
+    assert response.status_code == 200
+    assert response.json()["type"] == "clarification"
+    assert response.json()["missing_fields"] == ["amount_scope"]
+
+
+def test_language_defaults_and_business_id_is_not_required() -> None:
+    client = TestClient(create_app(provider=None))
+    response = client.post(
+        "/interpret",
+        json={"text": "How much did I sell today?", "business_id": "ignored"},
+    )
+    assert response.status_code == 200
+    assert response.json()["type"] == "query"
+
+
+def test_malformed_request_is_422() -> None:
+    client = TestClient(create_app(provider=None))
+    assert client.post("/interpret", json={}).status_code == 422
+    assert client.post("/interpret", json={"text": ""}).status_code == 422
+    assert client.post("/interpret", json={"text": "   "}).status_code == 422
+    assert client.post("/interpret", json={"text": "hi", "language": "1"}).status_code == 422
+
+
+def test_provider_unavailable_is_503() -> None:
+    class Down:
+        def interpret(self, text: str, language: str) -> Draft:
+            raise ProviderUnavailable()
+
+    client = TestClient(create_app(Down()))
+    response = client.post("/interpret", json={"text": "Client took coffees home."})
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Interpretation provider is unavailable."}
+    assert "key" not in response.text.lower()
+
+
+def test_provider_bad_response_is_502() -> None:
+    class Bad:
+        def interpret(self, text: str, language: str) -> Draft:
+            raise ProviderBadResponse()
+
+    client = TestClient(create_app(Bad()))
+    response = client.post("/interpret", json={"text": "Client took coffees home."})
+    assert response.status_code == 502
+    assert "secret" not in response.text.lower()
+
+
+def test_unexpected_error_is_500_without_the_exception_text() -> None:
+    class Boom:
+        def interpret(self, text: str, language: str) -> Draft:
+            raise RuntimeError("sk-live-secret-do-not-leak")
+
+    client = TestClient(create_app(Boom()))
+    response = client.post("/interpret", json={"text": "Client took coffees home."})
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error."}
+    assert "sk-live-secret" not in response.text
+
+
+def test_provider_retries_malformed_output_once() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages: list[dict[str, str]]) -> dict[str, object]:
+            self.calls += 1
+            if self.calls == 1:
+                return {"kind": "create_event", "quantity": "nope"}
+            return LLMRaw(kind="query", query="ignored").model_dump()
+
+    fake = FakeClient()
+    provider = XAIProvider(api_key="test-key", client=fake)
+    draft = provider.interpret("What did I sell today?", "en")
+    assert fake.calls == 2
+    assert draft.kind == "query"
+
+
+def test_provider_gives_up_after_two_bad_payloads() -> None:
+    class FakeClient:
+        def complete(self, messages: list[dict[str, str]]) -> dict[str, object]:
+            return {"kind": "not-a-kind"}
+
+    provider = XAIProvider(api_key="test-key", client=FakeClient())
+    with pytest.raises(ProviderBadResponse):
+        provider.interpret("hello", "en")
