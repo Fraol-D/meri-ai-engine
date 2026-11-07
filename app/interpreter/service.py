@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.interpreter.continuation import Continuation, resolve_utterance
+from app.interpreter.corrections import replacement_clarification
 from app.interpreter.raw import Draft
 from app.interpreter.rules import analyze, draft_from_evidence
 from app.interpreter.validation import finalize, unknown_clarification
@@ -33,7 +34,12 @@ def interpret_text(
     provider: LLMProvider | None = None,
     continuation: Continuation | None = None,
 ) -> InterpretationResult:
-    cleaned = resolve_utterance(text, continuation)
+    resolved = resolve_utterance(text, continuation)
+    if resolved.unrelated_message:
+        return unknown_clarification()
+    if resolved.unresolved_correction:
+        return replacement_clarification(resolved.text, resolved.ambiguous_number)
+    cleaned = resolved.text
     if not cleaned:
         raise EmptyUtterance()
     evidence = analyze(cleaned)

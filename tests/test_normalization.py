@@ -81,6 +81,88 @@ def test_relative_date_is_not_turned_into_today() -> None:
     assert "data" not in payload
 
 
+def test_today_asks_for_the_amount_only() -> None:
+    payload = _dump("I sold 30 shoes today.")
+    assert payload["type"] == "clarification"
+    assert payload["missing_fields"] == ["amount"]
+    assert "date" not in payload["question"]
+    assert "YYYY-MM-DD" not in payload["question"]
+    assert date.today().isoformat() not in str(payload)
+
+
+def test_tonight_is_not_a_missing_date() -> None:
+    payload = _dump("I bought 20 shirts tonight.")
+    assert payload["type"] == "clarification"
+    assert payload["missing_fields"] == ["amount"]
+    assert "date" not in payload["missing_fields"]
+
+
+def test_expense_today_omits_the_date() -> None:
+    bare = _dump("I spent 500 birr today.")
+    assert bare["type"] == "clarification"
+    assert bare["missing_fields"] == ["description"]
+    assert "date" not in bare["missing_fields"]
+
+    payload = _dump("I spent 500 birr on transport today.")
+    assert payload["type"] == "create_event"
+    assert payload["event_type"] == "expense"
+    assert payload["data"]["amount"] == 500
+    assert payload["data"]["description"] == "transport"
+    assert "date" not in payload["data"]
+    assert "today" not in str(payload["data"]).lower()
+
+
+def test_purchase_each_today_is_the_line_total() -> None:
+    payload = _dump("I bought 30 shirts for 1000 birr each today.")
+    assert payload == {
+        "type": "create_event",
+        "event_type": "purchase",
+        "data": {
+            "item": "shirts",
+            "quantity": 30,
+            "amount": 30000,
+            "currency": "ETB",
+        },
+    }
+
+
+def test_explicit_iso_date_is_kept_with_the_line_total() -> None:
+    payload = _dump("I sold 30 shoes for 3000 birr each on 2026-11-06.")
+    assert payload["type"] == "create_event"
+    assert payload["data"]["amount"] == 90000
+    assert payload["data"]["quantity"] == 30
+    assert payload["data"]["date"] == "2026-11-06"
+
+
+def test_explicit_month_name_date_is_kept_with_the_line_total() -> None:
+    payload = _dump("I bought 30 shirts for 1000 birr each on November 6, 2026.")
+    assert payload["type"] == "create_event"
+    assert payload["data"]["amount"] == 30000
+    assert payload["data"]["date"] == "2026-11-06"
+
+
+def test_concrete_date_wins_over_today() -> None:
+    sale = _dump("I sold 30 shoes today, on 2026-11-06, for 3000 birr each.")
+    assert sale["type"] == "create_event"
+    assert sale["data"]["item"] == "shoes"
+    assert sale["data"]["quantity"] == 30
+    assert sale["data"]["amount"] == 90000
+    assert sale["data"]["date"] == "2026-11-06"
+
+    purchase = _dump("I bought 30 shirts today, November 6, 2026, for 1000 birr each.")
+    assert purchase["type"] == "create_event"
+    assert purchase["data"]["amount"] == 30000
+    assert purchase["data"]["date"] == "2026-11-06"
+
+
+def test_concrete_date_wins_over_an_unresolved_relative_date() -> None:
+    payload = _dump("I sold five shirts for 900 birr total yesterday on 2026-11-06.")
+    assert payload["type"] == "create_event"
+    assert payload["data"]["amount"] == 900
+    assert payload["data"]["date"] == "2026-11-06"
+    assert "yesterday" not in str(payload["data"])
+
+
 def test_unclear_debt_direction_is_not_guessed() -> None:
     payload = _dump("John owes 500 birr.")
     assert payload["type"] == "clarification"

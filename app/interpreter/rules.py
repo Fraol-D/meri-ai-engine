@@ -67,10 +67,19 @@ _RELATIVE_COUNT = (
     r"nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
     r"nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|\d+)"
 )
+# The backend fills a blank date with Africa/Addis_Ababa today. These two
+# words are not a date value and must not force a clarification.
+_OMITTED_DATE_RE = re.compile(r"\b(?:today|tonight)\b", re.IGNORECASE)
+# Dates this service cannot resolve. They stay a clarification, including
+# when they appear beside today or tonight.
 RELATIVE_DATE_RE = re.compile(
-    rf"\b(?:yesterday|today|tomorrow|tonight|this morning|last night|"
+    rf"\b(?:yesterday|tomorrow|this morning|last night|"
     rf"(?:this|last|next)\s+(?:week|month|year)|"
     rf"{_RELATIVE_COUNT}\s+(?:day|week|month|year)s?\s+ago)\b",
+    re.IGNORECASE,
+)
+_SURFACE_DATE_RE = re.compile(
+    rf"(?:{_OMITTED_DATE_RE.pattern})|(?:{RELATIVE_DATE_RE.pattern})",
     re.IGNORECASE,
 )
 _LOSS_VERB_RE = re.compile(
@@ -191,15 +200,22 @@ def analyze(text: str) -> Evidence:
 
     working = original.rstrip(".!?")
     concrete, invalid, spans = find_concrete_dates(working)
-    relative_spans = [match.span() for match in RELATIVE_DATE_RE.finditer(working)]
+    unresolved_spans = [match.span() for match in RELATIVE_DATE_RE.finditer(working)]
+    omitted_spans = [match.span() for match in _OMITTED_DATE_RE.finditer(working)]
     evidence.date_invalid = invalid
-    # A relative date the service cannot normalize must not be dropped.
-    if relative_spans:
+    # A concrete calendar date wins over today, tonight, and any other
+    # relative phrase. today and tonight alone are omitted. Any other
+    # relative date, with no concrete date, must not be dropped or treated
+    # as today.
+    if concrete is not None:
+        evidence.date = concrete
+        evidence.relative_date = False
+    elif unresolved_spans:
         evidence.relative_date = True
         evidence.date = None
     else:
-        evidence.date = concrete
-    masked = mask_spans(working, spans + relative_spans)
+        evidence.date = None
+    masked = mask_spans(working, spans + unresolved_spans + omitted_spans)
 
     _extract_currency(masked, evidence)
     _extract_numbers(masked, evidence)
@@ -493,7 +509,7 @@ def _extract_expense(text: str, evidence: Evidence) -> None:
     match = re.search(r"\b(?:on|for)\s+(.+)$", text, re.IGNORECASE)
     if match is None:
         return
-    description = RELATIVE_DATE_RE.split(match.group(1))[0]
+    description = _SURFACE_DATE_RE.split(match.group(1))[0]
     description = _clean_phrase(description)
     if not description or description.lower() in VAGUE_ITEMS | {"money", "cash", "it"}:
         evidence.description = None
@@ -526,7 +542,7 @@ def _item_after(text: str, verbs: str) -> tuple[str | None, bool]:
 def _item_from_body(body: str) -> tuple[str | None, bool]:
     body = _ITEM_SPLIT_RE.split(body, maxsplit=1)[0]
     body = re.sub(r"^(?:of|the)\s+", "", body.strip(), flags=re.IGNORECASE)
-    body = _clean_phrase(RELATIVE_DATE_RE.sub(" ", body))
+    body = _clean_phrase(_SURFACE_DATE_RE.sub(" ", body))
     if not body:
         return None, False
     if body.lower() in VAGUE_ITEMS:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.interpreter.corrections import partition_corrections, revise_corrections
 from app.interpreter.rules import TOTAL_RE, UNIT_CUE_RE, analyze
 
 # The production frontend posts one string. It has no context object.
@@ -27,10 +28,22 @@ _SCOPE_ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 _NEW_REQUEST_RE = re.compile(
-    r"^(?:how |what |who |where |when |which |"
+    r"^(?:how\b|what(?:'s|s)?\b|who\b|where\b|when\b|which\b|why\b|"
+    r"(?:did|do|have|am|is|are)\s+(?:i|we|you|there)\b|"
     r"(?:i|we)\s+(?:just\s+|have\s+|had\s+)?"
-    r"(?:sold|bought|spent|lost|found|owe|paid|purchased)|"
-    r"(?:record|add)\s+)",
+    r"(?:sold|bought|spent|lost|found|owe|paid|purchased)\b|"
+    r"(?:record|add)\s+|"
+    r"(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|"
+    r"thanks|thank\s+you|yo|sup)\b)",
+    re.IGNORECASE,
+)
+_CONVERSATIONAL_CHITCHAT_RE = re.compile(
+    r"^(?:what(?:'s|s|\s+is)\s+up\b|how\s+are\s+(?:you|u)\b|"
+    r"how(?:'s|s|\s+is)\s+it\s+going\b|who\s+are\s+(?:you|u)\b|"
+    r"what\s+can\s+you\s+do\b|are\s+you\s+there\b|"
+    r"hi\b|hello\b|hey\b|good\s+(?:morning|afternoon|evening)\b|"
+    r"thanks\b|thank\s+you\b|yo\b|sup\b|"
+    r"never\s*mind\b|cancel\b|forget\s+it\b)",
     re.IGNORECASE,
 )
 _LEADING_PRICE_RE = re.compile(r"^(?:for|at)\s+", re.IGNORECASE)
@@ -54,13 +67,31 @@ class Continuation:
 
 
 @dataclass(frozen=True)
+class ResolvedUtterance:
+    """One utterance, or a correction that named no replacement."""
+
+    text: str
+    unresolved_correction: bool = False
+    ambiguous_number: str | None = None
+    unrelated_message: bool = False
+
+
+@dataclass(frozen=True)
+class _ComposeResult:
+    text: str
+    unresolved: bool = False
+    ambiguous_number: str | None = None
+    unrelated: bool = False
+
+
+@dataclass(frozen=True)
 class _ParsedContinuation:
     original: str
     answer: str
     missing_fields: tuple[str, ...]
 
 
-def resolve_utterance(text: str, continuation: Continuation | None = None) -> str:
+def resolve_utterance(text: str, continuation: Continuation | None = None) -> ResolvedUtterance:
     """Return one utterance the existing rules can interpret."""
     normalized = text.replace("\r\n", "\n").strip()
     parsed = _parse_frontend_continuation(normalized)
@@ -72,10 +103,26 @@ def resolve_utterance(text: str, continuation: Continuation | None = None) -> st
             answer = parsed.answer
             if not missing:
                 missing = parsed.missing_fields
-        return _compose(original, answer, missing)
-    if parsed is not None:
-        return _compose(parsed.original, parsed.answer, parsed.missing_fields)
-    return normalized
+        composed = _compose(original, answer, missing)
+    elif parsed is not None:
+        composed = _compose(parsed.original, parsed.answer, parsed.missing_fields)
+    else:
+        composed = _ComposeResult(normalized)
+    if composed.unrelated:
+        return ResolvedUtterance(composed.text, unrelated_message=True)
+    if composed.unresolved:
+        return ResolvedUtterance(
+            composed.text,
+            unresolved_correction=True,
+            ambiguous_number=composed.ambiguous_number,
+        )
+    # A raw utterance can carry the correction in a later sentence.
+    revised = revise_corrections(composed.text)
+    return ResolvedUtterance(
+        revised.text,
+        unresolved_correction=revised.unresolved,
+        ambiguous_number=revised.ambiguous_number,
+    )
 
 
 def _parse_frontend_continuation(text: str) -> _ParsedContinuation | None:
@@ -94,26 +141,46 @@ def _parse_frontend_continuation(text: str) -> _ParsedContinuation | None:
     )
 
 
-def _compose(original: str, answer: str, missing: tuple[str, ...]) -> str:
+def _compose(original: str, answer: str, missing: tuple[str, ...]) -> _ComposeResult:
     original = original.strip()
     answer = answer.strip()
     if not answer:
-        return original
+        return _ComposeResult(original)
+    if _is_unrelated_conversational(answer):
+        return _ComposeResult(answer, unrelated=True)
     if _is_new_request(answer):
         # A pending clarification must not reclassify a complete new utterance.
         # "I just sold ..." does not match the frontend's "i sold " prefix, so
         # the frontend wraps it. The answer itself is the request.
-        return answer
+        return _ComposeResult(answer)
     if not original:
-        return answer
+        return _ComposeResult(answer)
+
+    # Peel a correction before a price answer is glued onto the original.
+    # Otherwise "price is 2000" becomes another number beside the old price.
+    head, clauses = partition_corrections(answer)
+    if clauses:
+        if head:
+            nested = _compose(original, head, missing)
+            if nested.unresolved or nested.unrelated:
+                return nested
+            base = nested.text
+        else:
+            base = original
+        revised = revise_corrections(_join_clauses(base, clauses))
+        return _ComposeResult(
+            revised.text,
+            unresolved=revised.unresolved,
+            ambiguous_number=revised.ambiguous_number,
+        )
 
     scope = _SCOPE_ANSWER_RE.match(answer)
     if scope is not None:
-        return _ensure_cue(original, _scope_cue(scope.group("cue")))
+        return _ComposeResult(_ensure_cue(original, _scope_cue(scope.group("cue"))))
 
     if analyze(answer).money is None:
         base = original.rstrip().rstrip(".!?")
-        return f"{base}. {answer.rstrip('.!?')}."
+        return _ComposeResult(f"{base}. {answer.rstrip('.!?')}.")
 
     phrase = _LEADING_PRICE_RE.sub("", answer).rstrip(".!? ")
     has_unit = UNIT_CUE_RE.search(phrase) is not None
@@ -123,11 +190,22 @@ def _compose(original: str, answer: str, missing: tuple[str, ...]) -> str:
         has_total = True
     if _same_price(original, phrase):
         if has_unit:
-            return _ensure_cue(original, "each")
+            return _ComposeResult(_ensure_cue(original, "each"))
         if has_total:
-            return _ensure_cue(original, "total")
-        return original if original.endswith(".") else f"{original.rstrip('.!?')}."
-    return _attach_price(original, phrase)
+            return _ComposeResult(_ensure_cue(original, "total"))
+        finished = original if original.endswith(".") else f"{original.rstrip('.!?')}."
+        return _ComposeResult(finished)
+    return _ComposeResult(_attach_price(original, phrase))
+
+
+def _join_clauses(base: str, clauses: list[str]) -> str:
+    prefix = base.strip()
+    tail = " ".join(clause.strip() for clause in clauses)
+    if not prefix:
+        return tail
+    if prefix[-1] not in ".!?":
+        prefix += "."
+    return f"{prefix} {tail}"
 
 
 def _price_is_the_total(original: str, missing: tuple[str, ...]) -> bool:
@@ -147,6 +225,10 @@ def _price_is_the_total(original: str, missing: tuple[str, ...]) -> bool:
 
 def _is_new_request(answer: str) -> bool:
     return _NEW_REQUEST_RE.match(answer.strip()) is not None
+
+
+def _is_unrelated_conversational(answer: str) -> bool:
+    return _CONVERSATIONAL_CHITCHAT_RE.match(answer.strip()) is not None
 
 
 def _scope_cue(cue: str) -> str:

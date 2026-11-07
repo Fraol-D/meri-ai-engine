@@ -54,7 +54,7 @@ A required or ambiguous field is missing. The question says what to add. Vague w
 
 Price scope is not guessed. "900 birr" with a quantity is a clarification. "900 birr total" is the transaction amount. "900 birr each" is a unit price, and the only multiplication this service does is `quantity × unit price`.
 
-`birr`, `ETB`, and `Ethiopian birr` become `ETB`. A currency the user did not name is left out. A different currency the user did name is kept. Relative dates such as "yesterday" are not converted to today.
+`birr`, `ETB`, and `Ethiopian birr` become `ETB`. A currency the user did not name is left out. A different currency the user did name is kept. `today` and `tonight` are omitted from `data.date` so the backend can apply its business date. A concrete calendar date is kept, including when the same sentence also says today. Relative dates such as "yesterday" are not converted to today.
 
 ## Local setup
 
@@ -183,5 +183,7 @@ This is an MVP interpreter, not a production service.
 - English rules cover the bookkeeping phrases in the test suite. Other wording is sent to Gemini only when `GEMINI_API_KEY` is set, and that live path is not part of the automated tests.
 - Amharic and other languages are accepted in the `language` field but are not parsed by the rules. Without a provider key they return a clarification.
 - Each request is stateless. There is no conversation store. After a clarification, send `context.original_text` with the user's answer in `text`, or send the original utterance and the answer in one string. `I sold five shirts for 900 birr. Each.` still works. `Each.` or `Total.` alone does not create an event. A price given for the first time ("I sold five shirts" then "1000 birr") is the transaction total. A price already next to a quantity ("five shirts for 1000 birr") stays ambiguous until the answer says total or each. A complete new utterance wrapped into a pending clarification, such as "I just sold 5 shirts for 1000 birr each", is interpreted on its own.
+- `today` and `tonight` are not stored and do not ask for a date. The backend applies its business date when `data.date` is omitted. An explicit calendar date in the same utterance is kept.
 - Relative dates such as yesterday, last week, last year, and two days ago are not calculated and are not dropped. The response asks for a concrete `YYYY-MM-DD` date instead of guessing or using today.
+- An explicit correction replaces the value it states. "No, I sold 20 shoes, and they were 2000 birr each" overrides an earlier quantity and unit price. "quantity is 20" and "price is 2000 birr each" do the same for one field. A stated currency replaces the earlier one. A price correction that names no currency keeps the earlier currency. "No, that is wrong" asks for a replacement and does not keep the rejected sale. A later number without that language does not replace an earlier quantity or price.
 - The service never says an event was recorded.

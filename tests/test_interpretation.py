@@ -8,11 +8,14 @@ from decimal import Decimal
 
 import pytest
 
+from fastapi.testclient import TestClient
+
 from app.interpreter.raw import Draft
 from app.interpreter.rules import analyze
 from app.interpreter.service import interpret_text
 from app.interpreter.validation import decide, finalize
 from app.llm.errors import ProviderUnavailable
+from app.main import create_app
 
 SALE_TOTAL = "I sold five shirts for 900 birr total."
 SALE_EACH = "I sold five shirts for 900 birr each."
@@ -489,6 +492,14 @@ def test_replayed_scope_question_uses_the_trailing_answer() -> None:
     assert total["data"]["amount"] == 900
 
 
+def _posted(text: str) -> dict:
+    """HTTP body from POST /interpret with the model disabled."""
+    client = TestClient(create_app(provider=None))
+    response = client.post("/interpret", json={"text": text, "language": "en"})
+    assert response.status_code == 200
+    return response.json()
+
+
 def _frontend_continuation(original: str, question: str, missing: list[str], answer: str) -> str:
     fields = ", ".join(missing)
     return "\n".join(
@@ -533,6 +544,28 @@ def test_unqualified_price_with_quantity_stays_ambiguous() -> None:
     assert payload["missing_fields"] == ["amount_scope"]
     assert "1000 birr" in payload["question"]
     assert "per shirt" in payload["question"]
+
+
+def test_today_sale_continuation_keeps_the_line_total() -> None:
+    """The caller must send the original utterance. This service does not store it."""
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes today",
+            "How much was the sale?",
+            ["amount"],
+            "3000 birr each",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 90000,
+            "currency": "ETB",
+        },
+    }
 
 
 def test_amount_answer_continues_the_original_sale() -> None:
@@ -611,6 +644,368 @@ def test_scope_answer_does_not_invent_a_quantity() -> None:
     assert "How many shirts did you sell?" in total["question"]
 
 
+def test_full_correction_replaces_quantity_and_unit_price() -> None:
+    """30 shoes at 3000 birr each, then an explicit correction, is 20 × 2000."""
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes today.",
+            "How much was the sale?",
+            ["amount"],
+            "3000 birr each. No, I sold 20 shoes, and they were 2000 birr each.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 40000,
+            "currency": "ETB",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+    assert "date" not in payload["data"]
+
+
+def test_quantity_correction_recalculates_from_the_unit_price() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes at 3,000 birr each.",
+            "What date should I use? Please give a specific date as YYYY-MM-DD.",
+            ["date"],
+            "quantity is 20.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 60000,
+            "currency": "ETB",
+        },
+    }
+    assert "date" not in payload["data"]
+    assert "unit_price" not in payload["data"]
+
+
+def test_price_correction_keeps_the_quantity() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes at 3,000 birr each.",
+            "How much was the sale?",
+            ["amount"],
+            "price is 2,000 birr each.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 60000,
+            "currency": "ETB",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+
+
+def test_price_correction_changes_etb_to_usd() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes for 3000 ETB each.",
+            "How much was the sale?",
+            ["amount"],
+            "No, the price is 2000 USD each.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 60000,
+            "currency": "USD",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+
+
+def test_price_correction_changes_usd_to_etb() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes for 2000 USD each.",
+            "How much was the sale?",
+            ["amount"],
+            "No, the price is 3000 birr each.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 90000,
+            "currency": "ETB",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+    assert "USD" not in str(payload)
+
+
+def test_price_correction_without_a_currency_keeps_the_existing_one() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes for 3000 ETB each.",
+            "How much was the sale?",
+            ["amount"],
+            "No, the price is 2000 each.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 60000,
+            "currency": "ETB",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+
+
+def test_total_correction_replaces_the_amount_and_currency() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes for 3000 ETB each.",
+            "How much was the sale?",
+            ["amount"],
+            "No, the total is 5000 USD.",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 5000,
+            "currency": "USD",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+
+
+def test_correction_cues_inside_one_sentence() -> None:
+    """A comma or semicolon can introduce a correction without a new sentence."""
+    cases = [
+        (
+            "I sold 30 shoes for 3000 ETB each, no, I sold 20 for 2000 USD each.",
+            {
+                "type": "create_event",
+                "event_type": "sale",
+                "data": {
+                    "item": "shoes",
+                    "quantity": 20,
+                    "amount": 40000,
+                    "currency": "USD",
+                },
+            },
+        ),
+        (
+            "I sold 30 shoes for 3000 ETB each; actually, the quantity is 20.",
+            {
+                "type": "create_event",
+                "event_type": "sale",
+                "data": {
+                    "item": "shoes",
+                    "quantity": 20,
+                    "amount": 60000,
+                    "currency": "ETB",
+                },
+            },
+        ),
+        (
+            "I sold 30 shoes for 3000 ETB each. No, the total is 5000 USD.",
+            {
+                "type": "create_event",
+                "event_type": "sale",
+                "data": {
+                    "item": "shoes",
+                    "quantity": 30,
+                    "amount": 5000,
+                    "currency": "USD",
+                },
+            },
+        ),
+        (
+            "I sold 30 shoes for 3000 ETB each. Actually, the price is 2000 each.",
+            {
+                "type": "create_event",
+                "event_type": "sale",
+                "data": {
+                    "item": "shoes",
+                    "quantity": 30,
+                    "amount": 60000,
+                    "currency": "ETB",
+                },
+            },
+        ),
+    ]
+    for text, expected in cases:
+        posted = _posted(text)
+        assert posted == expected
+        assert "unit_price" not in posted["data"]
+        wrapped = _frontend_continuation(
+            "I sold five hats for 10 ETB each.",
+            "How much was the sale?",
+            ["amount"],
+            text,
+        )
+        assert _posted(wrapped) == expected
+
+
+def test_rejection_in_a_later_sentence_stays_a_clarification() -> None:
+    text = "I sold 30 shoes for 3000 ETB each. No, that is wrong."
+    for body in (
+        text,
+        _frontend_continuation(
+            "I sold five hats for 10 ETB each.",
+            "How much was the sale?",
+            ["amount"],
+            text,
+        ),
+    ):
+        payload = _posted(body)
+        assert payload["type"] == "clarification"
+        assert payload["missing_fields"] == ["item", "quantity", "amount"]
+        assert "data" not in payload
+
+
+def test_a_later_unrelated_number_is_not_a_correction() -> None:
+    payload = _posted("I sold 30 shoes for 3000 ETB each, and 5 were blue.")
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 90000,
+            "currency": "ETB",
+        },
+    }
+
+
+def test_ordinary_clarification_does_not_overwrite_quantity() -> None:
+    priced = _data(
+        _frontend_continuation(
+            "I sold 30 shoes today.",
+            "How much was the sale?",
+            ["amount"],
+            "3000 birr each.",
+        )
+    )
+    assert priced["data"]["quantity"] == 30
+    assert priced["data"]["amount"] == 90000
+
+    stray = _data(
+        _frontend_continuation(
+            "I sold 30 shoes today for 3000 birr each.",
+            "How much was the sale?",
+            ["amount"],
+            "also 5.",
+        )
+    )
+    assert stray["type"] == "create_event"
+    assert stray["data"]["quantity"] == 30
+    assert stray["data"]["amount"] == 90000
+    assert stray["data"]["item"] == "shoes"
+
+
+def test_rejection_without_a_replacement_asks() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes at 3000 birr each.",
+            "How much was the sale?",
+            ["amount"],
+            "No, that is wrong.",
+        )
+    )
+    assert payload["type"] == "clarification"
+    assert payload["missing_fields"]
+    assert "data" not in payload
+    encoded = str(payload)
+    assert "90000" not in encoded
+    assert "40000" not in encoded
+    assert "3000" not in encoded
+
+
+def test_accumulated_answers_keep_price_and_explicit_date() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes today.",
+            "What date should I use? Please give a specific date as YYYY-MM-DD.",
+            ["date"],
+            "3000 birr each. 2026-11-06",
+        )
+    )
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 30,
+            "amount": 90000,
+            "currency": "ETB",
+            "date": "2026-11-06",
+        },
+    }
+
+
+def test_quantity_correction_keeps_an_explicit_date() -> None:
+    payload = _data(
+        _frontend_continuation(
+            "I sold 30 shoes on 2026-11-06 at 3,000 birr each.",
+            "How much was the sale?",
+            ["amount"],
+            "quantity is 20.",
+        )
+    )
+    assert payload["type"] == "create_event"
+    assert payload["data"]["quantity"] == 20
+    assert payload["data"]["amount"] == 60000
+    assert payload["data"]["date"] == "2026-11-06"
+    assert "unit_price" not in payload["data"]
+
+
+def test_purchase_and_expense_still_interpret() -> None:
+    purchase = _data("I bought 30 shirts for 1000 birr each today.")
+    assert purchase == {
+        "type": "create_event",
+        "event_type": "purchase",
+        "data": {"item": "shirts", "quantity": 30, "amount": 30000, "currency": "ETB"},
+    }
+    assert "date" not in purchase["data"]
+
+    expense = _data("I spent 500 birr on transport today.")
+    assert expense["type"] == "create_event"
+    assert expense["event_type"] == "expense"
+    assert expense["data"]["amount"] == 500
+    assert expense["data"]["description"] == "transport"
+    assert "date" not in expense["data"]
+
+    yesterday = _data("I sold 30 shoes yesterday.")
+    assert yesterday["type"] == "clarification"
+    assert "date" in yesterday["missing_fields"]
+    assert "data" not in yesterday
+
+
 def test_wrapped_new_sale_is_not_folded_into_an_expense() -> None:
     payload = _data(
         _frontend_continuation(
@@ -624,3 +1019,143 @@ def test_wrapped_new_sale_is_not_folded_into_an_expense() -> None:
     assert payload["event_type"] == "sale"
     assert payload["data"]["amount"] == 5000
     assert payload["data"]["quantity"] == 5
+
+
+def test_field_correction_after_full_restatement() -> None:
+    """Test A — field correction after full restatement."""
+    expected = {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 25,
+            "amount": 50000,
+            "currency": "ETB",
+        },
+    }
+    continuation = _frontend_continuation(
+        "I sold 30 shoes for 3000 ETB each.",
+        "How much was the sale?",
+        ["amount"],
+        "No, I sold 20 shoes for 2000 ETB each. Actually, the quantity is 25.",
+    )
+    raw = "I sold 30 shoes for 3000 ETB each. No, I sold 20 shoes for 2000 ETB each. Actually, the quantity is 25."
+    answer_only = "No, I sold 20 shoes for 2000 ETB each. Actually, the quantity is 25."
+    for body in (continuation, raw, answer_only):
+        payload = _posted(body)
+        assert payload == expected
+        assert "unit_price" not in payload["data"]
+
+
+def test_full_restatement_after_field_correction() -> None:
+    """Test B — full restatement after field correction."""
+    expected = {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 40000,
+            "currency": "ETB",
+        },
+    }
+    continuation = _frontend_continuation(
+        "I sold 30 shoes for 3000 ETB each.",
+        "How much was the sale?",
+        ["amount"],
+        "No, the quantity is 25. Actually, I sold 20 shoes for 2000 ETB each.",
+    )
+    raw = "I sold 30 shoes for 3000 ETB each. No, the quantity is 25. Actually, I sold 20 shoes for 2000 ETB each."
+    answer_only = "No, the quantity is 25. Actually, I sold 20 shoes for 2000 ETB each."
+    for body in (continuation, raw, answer_only):
+        payload = _posted(body)
+        assert payload == expected
+        assert "unit_price" not in payload["data"]
+
+
+def test_price_correction_after_full_restatement() -> None:
+    """Test C — price correction after full restatement."""
+    expected = {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 30000,
+            "currency": "ETB",
+        },
+    }
+    continuation = _frontend_continuation(
+        "I sold 30 shoes for 3000 ETB each.",
+        "How much was the sale?",
+        ["amount"],
+        "No, I sold 20 shoes for 2000 ETB each. Actually, the price is 1500 ETB each.",
+    )
+    raw = "I sold 30 shoes for 3000 ETB each. No, I sold 20 shoes for 2000 ETB each. Actually, the price is 1500 ETB each."
+    answer_only = "No, I sold 20 shoes for 2000 ETB each. Actually, the price is 1500 ETB each."
+    for body in (continuation, raw, answer_only):
+        payload = _posted(body)
+        assert payload == expected
+        assert "unit_price" not in payload["data"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "No, I meant 20.",
+        "I meant 20.",
+        "Actually, 20.",
+        "No, 20.",
+        "No, make it 20.",
+        "Actually, make it 20.",
+        "Wrong, 20.",
+    ],
+)
+def test_ambiguous_bare_number_correction_asks_for_clarification(answer: str) -> None:
+    """Issue 1 — an attempted correction with a bare number must not be guessed or ignored."""
+    continuation = _frontend_continuation(
+        "I sold 30 shoes for 3000 ETB each.",
+        "How much was the sale?",
+        ["amount"],
+        answer,
+    )
+    raw = f"I sold 30 shoes for 3000 ETB each. {answer}"
+    for body in (continuation, raw):
+        payload = _posted(body)
+        assert payload["type"] == "clarification"
+        assert "data" not in payload
+        assert payload["missing_fields"] == ["quantity", "amount"]
+        lowered = payload["question"].lower()
+        assert "20" in lowered
+        assert "quantity" in lowered
+        assert "unit price" in lowered
+        assert "total amount" in lowered
+        assert "90000" not in str(payload)
+
+
+@pytest.mark.parametrize(
+    "aside",
+    [
+        "What's up with u",
+        "Whats up",
+        "What is up?",
+        "Hello there",
+        "Hi",
+        "How are you?",
+        "Who are you?",
+        "Never mind",
+    ],
+)
+def test_unrelated_conversational_message_during_pending_clarification(aside: str) -> None:
+    """Issue 2 — unrelated conversational messages must not repeat the sale clarification or create an event."""
+    continuation = _frontend_continuation(
+        "I sold 30 shoes today.",
+        "How much was the sale?",
+        ["amount"],
+        aside,
+    )
+    payload = _posted(continuation)
+    assert payload["type"] == "clarification"
+    assert "data" not in payload
+    assert payload["missing_fields"] == ["intent"]
+    assert "How much was the sale?" not in payload["question"]
