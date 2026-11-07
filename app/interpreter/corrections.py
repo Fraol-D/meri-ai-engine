@@ -107,11 +107,11 @@ _TRADE_VERB = re.compile(
     r"spent|spend|spending)\b",
     re.IGNORECASE,
 )
-# A comma or semicolon can introduce a correction without a new sentence.
+# A comma, semicolon, or newline can introduce a correction without a period.
 # "3,000" has no space, so it does not match. "no problem" is not a cue.
 # Do not split inside stacked cues like "No, I meant 20." or "No, actually ...".
 _CLAUSE_BREAK = re.compile(
-    r"(?:(?<=[.!?])\s+"
+    r"(?:(?<=[.!?])\s+|\r?\n\s*"
     r"|(?<!\bno[,;])(?<!\bnope[,;])(?<!\bwrong[,;])"
     r"(?<!\bactually[,;])(?<!\bcorrection[,;])(?<!\binstead[,;])"
     r"(?<=[,;])\s+(?=(?:nope|no|wrong|actually|correction|instead|"

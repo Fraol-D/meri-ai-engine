@@ -15,10 +15,10 @@ from app.interpreter.rules import TOTAL_RE, UNIT_CUE_RE, analyze
 # The production frontend posts one string. It has no context object.
 _FRONTEND_CONTINUATION_RE = re.compile(
     r"\A\s*Original user statement:\s*(?P<original>\S.*?)\n"
-    r"\s*Clarification question:\s*(?P<question>.*?)\n"
-    r"\s*Missing fields:\s*(?P<fields>.*?)\n"
-    r"\s*User clarification answer:\s*(?P<answer>.*?)\n"
-    r"\s*Resolve the original request using the clarification answer\.?\s*\Z",
+    r"(?:\s*Clarification question:\s*(?P<question>.*?)\n)?"
+    r"(?:\s*Missing fields:\s*(?P<fields>.*?)\n)?"
+    r"\s*User clarification answer:\s*(?P<answer>.*?)"
+    r"(?:\n\s*Resolve the original request using the clarification answer\.?)?\s*\Z",
     re.IGNORECASE | re.DOTALL,
 )
 _SCOPE_ANSWER_RE = re.compile(
@@ -129,9 +129,10 @@ def _parse_frontend_continuation(text: str) -> _ParsedContinuation | None:
     match = _FRONTEND_CONTINUATION_RE.match(text)
     if match is None:
         return None
+    raw_fields = match.group("fields") or ""
     fields = tuple(
         field.strip()
-        for field in match.group("fields").split(",")
+        for field in raw_fields.split(",")
         if field.strip()
     )
     return _ParsedContinuation(

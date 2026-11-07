@@ -1159,3 +1159,41 @@ def test_unrelated_conversational_message_during_pending_clarification(aside: st
     assert "data" not in payload
     assert payload["missing_fields"] == ["intent"]
     assert "How much was the sale?" not in payload["question"]
+
+
+def test_continuation_without_trailing_resolve_line_applies_correction() -> None:
+    """Production regression — 4-line continuation without the trailing instruction line."""
+    text = (
+        "Original user statement: I sold 30 shoes for 3000 ETB each.\n"
+        "Clarification question: Is this correct?\n"
+        "Missing fields: quantity, amount\n"
+        "User clarification answer: No, I sold 20 shoes for 2000 ETB each."
+    )
+    payload = _posted(text)
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 40000,
+            "currency": "ETB",
+        },
+    }
+    assert "unit_price" not in payload["data"]
+
+
+def test_newline_separated_correction_without_continuation_headers() -> None:
+    """Newline-separated correction clauses without trailing punctuation on the prior line."""
+    text = "I sold 30 shoes for 3000 ETB each\nNo, I sold 20 shoes for 2000 ETB each."
+    payload = _posted(text)
+    assert payload == {
+        "type": "create_event",
+        "event_type": "sale",
+        "data": {
+            "item": "shoes",
+            "quantity": 20,
+            "amount": 40000,
+            "currency": "ETB",
+        },
+    }
